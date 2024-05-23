@@ -1,0 +1,226 @@
+---
+title: "BSAN730-Project"
+author: "Jui Nagarkar, Injuu Jyenis, Adawn Symonette"
+date: "2024-04-09"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#install.packages("rpart")
+#install.packages("rpart.plot")
+#install.packages("caTools")
+#install.packages("caret") # for confusionMatrix
+library(tidyverse)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(caTools)
+library(caret)
+library(dplyr)
+library(corrplot)
+```
+
+
+```{r}
+#---------------Exploratory Data Analysis Code: -------------------------
+library(readr)
+heart <- read.csv("C:/Users/sampa/OneDrive/Documents/Jui Homework/5 Year MBA Program!!/Spring 2024!/BSAN 730/Final Project/heart-failure/heart.csv")
+
+#understanding the variables
+str(heart)
+summary(heart)
+
+# Convert categorical variables to factors
+heart$Sex <- as.factor(heart$Sex)
+heart$ChestPainType <- as.factor(heart$ChestPainType)
+heart$RestingECG <- as.factor(heart$RestingECG)
+heart$ExerciseAngina <- as.factor(heart$ExerciseAngina)
+heart$ST_Slope <- as.factor(heart$ST_Slope)
+
+#histograms of the numeric values
+hist(heart$Age)
+hist(heart$RestingBP)
+hist(heart$Cholesterol)
+hist(heart$FastingBS)
+hist(heart$MaxHR)
+hist(heart$Oldpeak)
+
+#boxplots
+boxplot(heart$Age ~ heart$Sex)
+boxplot(heart$Age ~ heart$ChestPainType)
+boxplot(heart$Age ~ heart$RestingECG)
+boxplot(heart$Age ~ heart$ExerciseAngina)
+boxplot(heart$Age ~ heart$ST_Slope)
+
+#corrplot of the data
+cor_matrix <- cor(heart[, sapply(heart, is.numeric)])
+corrplot::corrplot(cor_matrix, method="color")
+summary(heart)
+
+#distribution of heart disease
+ggplot(heart, aes(x=as.factor(heart$HeartDisease), fill=as.factor(heart$HeartDisease))) +
+  geom_bar() +
+  labs(title="Distribution of Heart Disease", x="Heart Disease", y="Count") +
+  theme_minimal()
+```
+
+
+```{r}
+#----------------------------Random Splitting--------------------------
+
+index <- sample(nrow(heart), nrow(heart) * 0.70)
+heart_train <- heart[index, ]
+heart_holdout <- heart[-index, ]
+ 
+write.csv(heart_train, "heart_train.csv", row.names = FALSE)
+write.csv(heart_holdout, "heart_holdout.csv", row.names = FALSE)
+```
+
+
+```{r}
+#--------------------Logistic Model Code:--------------------------------
+glm.heart<- glm(HeartDisease~., family = binomial, heart_train)
+summary(glm.heart)
+```
+
+```{r}
+plot(heart_train[,-c(2,3,7,9,11)])
+```
+
+```{r}
+glm_heart_full <- glm(HeartDisease ~ Age * Cholesterol + Sex + MaxHR, family = binomial, data = heart_train)
+summary(glm_heart_full)
+```
+
+```{r}
+glm.heart_cs <- glm(HeartDisease ~ Cholesterol * Sex, family = binomial, data = heart_train)
+summary(glm.heart_cs)
+```
+
+```{r}
+glm.heart_csa <- glm(HeartDisease ~ Cholesterol * Sex + Age , family = binomial, data = heart_train)
+summary(glm.heart_csa)
+```
+
+```{r}
+glm.heart_cf <- glm(HeartDisease ~ Cholesterol * FastingBS + Sex + Age, family = binomial, data = heart_train)
+summary(glm.heart_cf)
+
+```
+
+```{r}
+glm.heart_fs <- glm(HeartDisease ~ FastingBS * Sex , family = binomial, data = heart_train)
+summary(glm.heart_fs)
+```
+```{r}
+library(pROC)
+
+# Fit the model using testing data
+glm_heart_full<- glm(HeartDisease ~ Age * Cholesterol + Sex + MaxHR, family = binomial, data = heart_holdout)
+
+# Predict probabilities
+prob_predictions <- predict(glm_heart_full, type = "response")
+
+# Calculate ROC and AUC
+roc_response <- roc(heart_holdout$HeartDisease, prob_predictions)
+auc_value <- auc(roc_response)
+
+# Print the AUC
+print(auc_value)
+```
+
+
+
+```{r}
+#-----------------------------GBM Boosting Code: -----------------------
+
+library(gbm)
+heart.boost<- gbm(HeartDisease~Age * Cholesterol + Sex + MaxHR, data = heart_train,
+                  distribution = "bernoulli", 
+                  n.trees = 5000, shrinkage = 0.01, 
+                  interaction.depth = 3, 
+                  cv.folds = 5, n.cores = 5)
+summary(heart.boost) ## gives variable importance
+
+#the higher the area under the curve the better the model is
+#we want the left side of the curve to be higher
+#AUC should be as large as possible -> largest possible area is 1
+#0.5 is the minimum value for AUC
+
+library(ROCR)
+pred <- prediction(heart.boost.pred.test, heart_holdout$HeartDisease)
+perf <- performance(pred, "tpr", "fpr")
+plot(perf, colorize=TRUE)
+unlist(slot(performance(pred, "auc"), "y.values"))  # get the AUC
+
+# Generate the confusion matrix
+confusion_matrix <- table(Truth = heart_holdout$HeartDisease, Predicted = heart.boost.pred.labels)
+
+# Print the confusion matrix
+print(confusion_matrix)
+
+# Calculate and print MR, FPR, FNR
+misclassification_rate <- mean(heart_holdout$HeartDisease != heart.boost.pred.labels)
+false_positive_rate <- sum(heart_holdout$HeartDisease == 0 & heart.boost.pred.labels == 1) / sum(heart_holdout$HeartDisease == 0)
+false_negative_rate <- sum(heart_holdout$HeartDisease == 1 & heart.boost.pred.labels == 0) / sum(heart_holdout$HeartDisease == 1)
+
+cat("Misclassification Rate (MR):", misclassification_rate, "\n")
+cat("False Positive Rate (FPR):", false_positive_rate, "\n")
+cat("False Negative Rate (FNR):", false_negative_rate, "\n")
+```
+
+
+
+
+```{r}
+#-----------------------------Neural Network Code: ------------------------------------------------------
+library(neuralnet)
+y.ind <- which(names(heart_train) == "HeartDisease")
+heart_train.X <- as.data.frame(scale(model.matrix(~ ., data = heart_train[, -y.ind])[, -1]))
+heart_train.Y <- heart_train[, y.ind]
+heart_train1 <- data.frame(HeartDisease = heart_train.Y, heart_train.X)
+heart_test1 <- as.data.frame(scale(model.matrix(~ ., data = heart_test[, -y.ind])[, -1]))
+
+# Fitting neural networks
+# Using 3 hidden nodes
+heart_ann <- neuralnet(HeartDisease ~ ., data = heart_train1, hidden = 3, linear.output = FALSE)
+plot(heart_ann)
+# Using 5 hidden nodes
+heart_ann_5 <- neuralnet(HeartDisease ~ ., data = heart_train1, hidden = 5, linear.output = FALSE)
+plot(heart_ann_5)
+
+# Computing the predictions on the test set
+heart_pred1 <- compute(heart_ann, heart_test1)
+results <- cbind(Actual = heart_test$HeartDisease, Predicted = heart_pred1$net.result)
+head(results, 10)
+
+library(ROCR)
+predicted_matrix <- matrix(heart_pred1$net.result, ncol = 1)
+results <- cbind(Actual = heart_test$HeartDisease, Predicted = predicted_matrix)
+pred <- prediction(predicted_matrix, heart_test$HeartDisease)
+perf <- performance(pred, "tpr", "fpr")
+
+# Plotting the ROC curve
+plot(perf, colorize = TRUE, main = "ROC Curve for Heart Disease Prediction")
+
+# Getting the AUC
+unlist(slot(performance(pred, "auc"), "y.values"))
+heart.pred01.ann <- (heart_pred1$net.result > mean(heart_train$HeartDisease)) * 1
+
+# Confusion matrix
+confusion_matrix <- table(Truth = heart_test$HeartDisease, Predicted = heart.pred01.ann)
+print(confusion_matrix)
+
+# Calculating and print MR, FPR, FNR
+misclassification_rate <- mean(heart_test$HeartDisease != heart.pred01.ann)
+false_positive_rate <- sum(heart_test$HeartDisease == 0 & heart.pred01.ann == 1) / sum(heart_test$HeartDisease == 0)
+false_negative_rate <- sum(heart_test$HeartDisease == 1 & heart.pred01.ann == 0) / sum(heart_test$HeartDisease == 1)
+
+cat("Misclassification Rate (MR):", misclassification_rate, "\n")
+cat("False Positive Rate (FPR):", false_positive_rate, "\n")
+cat("False Negative Rate (FNR):", false_negative_rate, "\n")
+
+
+```
